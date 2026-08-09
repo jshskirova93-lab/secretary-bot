@@ -132,6 +132,72 @@ BIG_TASK_TOOL = {
 }
 
 
+CALENDAR_EVENT_TOOL = {
+    "name": "create_calendar_event",
+    "description": (
+        "Создать событие в Google Календаре. Вызывай, когда речь о встрече, визите, "
+        "звонке в конкретное время, поездке или мероприятии — то есть о том, что "
+        "занимает время в расписании и о чём нужно помнить в календаре "
+        "(«встреча с Ивановым в четверг в 14:00», «поставь в календарь визит к врачу»). "
+        "Для обычных дел без привязки к встрече («купить молоко», «дописать отчёт») "
+        "используй save_task."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Название события, коротко и понятно."},
+            "date": {"type": "string", "description": "Дата события в формате YYYY-MM-DD."},
+            "time": {
+                "type": ["string", "null"],
+                "description": "Время начала HH:MM. null — если событие на весь день.",
+            },
+            "duration_minutes": {
+                "type": "integer",
+                "description": "Длительность в минутах. Если не указана — 60.",
+            },
+            "location": {"type": "string", "description": "Место, если названо. Иначе пустая строка."},
+            "description": {"type": "string", "description": "Детали, если есть. Иначе пустая строка."},
+        },
+        "required": ["title", "date", "time", "duration_minutes", "location", "description"],
+    },
+}
+
+CALENDAR_RESCHEDULE_TOOL = {
+    "name": "reschedule_calendar_event",
+    "description": (
+        "Перенести, переименовать или отменить существующее событие в календаре. "
+        "Вызывай на фразы вида «перенеси встречу с Ивановым на пятницу», "
+        "«отмени визит к врачу», «переименуй планёрку»."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "search_query": {
+                "type": "string",
+                "description": "По каким словам искать событие в календаре (часть названия).",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["перенести", "переименовать", "отменить"],
+            },
+            "new_date": {
+                "type": ["string", "null"],
+                "description": "Новая дата YYYY-MM-DD при переносе. Иначе null.",
+            },
+            "new_time": {
+                "type": ["string", "null"],
+                "description": "Новое время HH:MM при переносе. Иначе null.",
+            },
+            "new_title": {
+                "type": ["string", "null"],
+                "description": "Новое название при переименовании. Иначе null.",
+            },
+        },
+        "required": ["search_query", "action", "new_date", "new_time", "new_title"],
+    },
+}
+
+
 def _facts_block(facts: list[dict] | None) -> str:
     """Готовим факты из памяти для подстановки в системный промпт."""
     if not facts:
@@ -158,14 +224,23 @@ def parse_message(user_text: str, facts: list[dict] | None = None) -> dict:
         system=(
             f"Сегодня {today}. Ты помогаешь личному секретарю понимать сообщения пользователя "
             f"на русском языке.\n"
-            f"- Обычная задача/дело/мероприятие → save_task\n"
+            f"- Обычное дело без фиксированного времени → save_task\n"
+            f"- Встреча, визит, звонок, поездка, мероприятие в конкретное время → create_calendar_event\n"
+            f"- Перенос, переименование или отмена события → reschedule_calendar_event\n"
             f"- Покупка, оплата, трата денег → save_expense\n"
             f"- Крупная задача, которую надо разбить на шаги → split_big_task\n"
             f"- Факт о пользователе, людях, проектах, привычках → remember_fact\n"
             f"- Просто вопрос или реплика → не вызывай инструментов\n"
             f"Вызывай ровно один инструмент." + _facts_block(facts)
         ),
-        tools=[TASK_TOOL, EXPENSE_TOOL, BIG_TASK_TOOL, MEMORY_TOOL],
+        tools=[
+            TASK_TOOL,
+            EXPENSE_TOOL,
+            BIG_TASK_TOOL,
+            MEMORY_TOOL,
+            CALENDAR_EVENT_TOOL,
+            CALENDAR_RESCHEDULE_TOOL,
+        ],
         tool_choice={"type": "auto"},
         messages=[{"role": "user", "content": user_text}],
     )
@@ -186,6 +261,12 @@ def parse_message(user_text: str, facts: list[dict] | None = None) -> dict:
             return data
         if block.name == "remember_fact":
             data["kind"] = "fact"
+            return data
+        if block.name == "create_calendar_event":
+            data["kind"] = "cal_event"
+            return data
+        if block.name == "reschedule_calendar_event":
+            data["kind"] = "cal_change"
             return data
     return {"kind": "chat"}
 

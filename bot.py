@@ -49,6 +49,10 @@ dp = Dispatcher()
 # станут неактуальны — не страшно, пользователь повторит запрос.
 _pending_big_tasks: dict[str, dict] = {}
 
+# То же самое для операций с календарём: бот никогда не пишет в календарь,
+# пока пользователь не нажмёт кнопку подтверждения.
+_pending_calendar: dict[str, dict] = {}
+
 
 def _owner_only(user_id: int) -> bool:
     return user_id == config.OWNER_CHAT_ID
@@ -67,7 +71,9 @@ def _tasks_keyboard(rows) -> InlineKeyboardMarkup | None:
 HELP_TEXT = (
     "*Как пользоваться*\n\n"
     "Просто пиши или наговаривай — я сам разберусь, что это:\n"
-    "• «завтра в 15:00 позвонить врачу, важно» → задача\n"
+    "• «дописать отчёт до пятницы» → задача\n"
+    "• «встреча с Ивановым в четверг в 14:00» → событие в календаре\n"
+    "• «перенеси встречу с Ивановым на пятницу» → перенесу в календаре\n"
     "• «купил кофе за 300 рублей» → трата\n"
     "• «подготовить презентацию для клиента» → предложу разбить на шаги\n"
     "• «Марина — моя помощница» → запомню и буду учитывать\n"
@@ -140,6 +146,15 @@ MONTHS_RU = [
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 ]
 WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
+
+def _human_date(date_str: str) -> str:
+    """2026-08-12 → «12 августа (среда)», с пометкой сегодня/завтра."""
+    try:
+        d = date.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        return date_str
+    return _format_day_header(d)
 
 
 def _format_day_header(d: date) -> str:
@@ -289,6 +304,86 @@ async def cmd_forget(message: Message) -> None:
         await message.answer("Такого факта не нашёл.")
 
 
+@dp.callback_query(F.data.startswith("cal_add:"))
+async def on_cal_add(callback: CallbackQuery) -> None:
+    """Создаёт событие в календаре — только после явного согласия пользователя."""
+    if not _owner_only(callback.from_user.id):
+        return
+    token = callback.data.split(":")[1]
+    parsed = _pending_calendar.pop(token, None)
+    if not parsed:
+        await callback.answer("Это предложение устарело, повтори запрос")
+        return
+
+    result = calendar_integration.create_event(
+        title=parsed["title"],
+        date_str=parsed["date"],
+        time_str=parsed.get("time"),
+        duration_minutes=parsed.get("duration_minutes") or 60,
+        description=parsed.get("description", ""),
+        location=parsed.get("location", ""),
+    )
+    if result["ok"]:
+        await callback.answer("Добавлено в календарь ✅")
+        when = _human_date(parsed["date"])
+        tp = f" в {parsed['time']}" if parsed.get("time") else ""
+        await callback.message.edit_text(f"📅 В календаре: «{parsed['title']}» — {when}{tp}")
+    else:
+        await callback.answer("Не получилось")
+        await callback.message.edit_text(
+            f"❌ Не удалось добавить событие.\n\n{result['error']}\n\n"
+            "Проверь командой /caltest — возможно, у бота пока нет права записи."
+        )
+
+
+@dp.callback_query(F.data.startswith("cal_do:"))
+async def on_cal_do(callback: CallbackQuery) -> None:
+    """Переносит, переименовывает или удаляет событие — после подтверждения."""
+    if not _owner_only(callback.from_user.id):
+        return
+    token = callback.data.split(":")[1]
+    payload = _pending_calendar.pop(token, None)
+    if not payload:
+        await callback.answer("Это предложение устарело, повтори запрос")
+        return
+
+    change, event = payload["change"], payload["event"]
+    action = change["action"]
+
+    if action == "отменить":
+        result = calendar_integration.delete_event(event["id"])
+        done_text = f"🗑 Удалено из календаря: «{event['title']}»"
+    elif action == "переименовать":
+        result = calendar_integration.update_event(event["id"], title=change.get("new_title"))
+        done_text = f"✏️ Переименовано: «{change.get('new_title')}»"
+    else:
+        result = calendar_integration.update_event(
+            event["id"],
+            date_str=change.get("new_date"),
+            time_str=change.get("new_time"),
+        )
+        when = _human_date(change["new_date"]) if change.get("new_date") else ""
+        tp = f" в {change['new_time']}" if change.get("new_time") else ""
+        done_text = f"📅 Перенесено: «{event['title']}» — {when}{tp}"
+
+    if result["ok"]:
+        await callback.answer("Готово ✅")
+        await callback.message.edit_text(done_text)
+    else:
+        await callback.answer("Не получилось")
+        await callback.message.edit_text(f"❌ Не удалось изменить событие.\n\n{result['error']}")
+
+
+@dp.callback_query(F.data.startswith("cal_cancel:"))
+async def on_cal_cancel(callback: CallbackQuery) -> None:
+    if not _owner_only(callback.from_user.id):
+        return
+    token = callback.data.split(":")[1]
+    _pending_calendar.pop(token, None)
+    await callback.answer("Отменено")
+    await callback.message.edit_text("Хорошо, ничего не меняю в календаре.")
+
+
 @dp.callback_query(F.data.startswith("big_yes:"))
 async def on_big_yes(callback: CallbackQuery) -> None:
     if not _owner_only(callback.from_user.id):
@@ -357,6 +452,75 @@ async def _handle_incoming_text(message: Message, text: str) -> None:
             category=parsed.get("category", "прочее"),
         )
         await message.answer(f"Запомнил: {parsed['fact']} 🧠")
+        return
+
+    if kind == "cal_event":
+        # В календарь ничего не пишем без явного подтверждения кнопкой
+        token = str(uuid.uuid4())[:8]
+        _pending_calendar[token] = parsed
+
+        when = _human_date(parsed["date"])
+        time_part = f" в {parsed['time']}" if parsed.get("time") else " (весь день)"
+        lines = ["📅 Добавить в календарь?", "", f"*{parsed['title']}*", f"{when}{time_part}"]
+        if parsed.get("duration_minutes") and parsed.get("time"):
+            lines.append(f"Длительность: {parsed['duration_minutes']} мин")
+        if parsed.get("location"):
+            lines.append(f"Место: {parsed['location']}")
+        if parsed.get("description"):
+            lines.append(f"Детали: {parsed['description']}")
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Добавить", callback_data=f"cal_add:{token}"),
+                    InlineKeyboardButton(text="✖️ Отмена", callback_data=f"cal_cancel:{token}"),
+                ]
+            ]
+        )
+        await message.answer("\n".join(lines), reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if kind == "cal_change":
+        found = calendar_integration.find_events_by_title(parsed["search_query"])
+        if not found:
+            await message.answer(
+                f"Не нашёл в календаре событие по запросу «{parsed['search_query']}». "
+                "Попробуй назвать его точнее."
+            )
+            return
+        if len(found) > 1:
+            lines = ["Нашёл несколько событий — уточни, какое именно:", ""]
+            for e in found[:5]:
+                lines.append(f"• {_human_date(e['date'])} — {e['title']}")
+            await message.answer("\n".join(lines))
+            return
+
+        event = found[0]
+        token = str(uuid.uuid4())[:8]
+        _pending_calendar[token] = {"change": parsed, "event": event}
+        action = parsed["action"]
+
+        if action == "отменить":
+            text = f"Удалить из календаря событие «{event['title']}» ({_human_date(event['date'])})?"
+            btn = "🗑 Удалить"
+        elif action == "переименовать":
+            text = f"Переименовать «{event['title']}» → «{parsed.get('new_title')}»?"
+            btn = "✅ Переименовать"
+        else:
+            when = _human_date(parsed["new_date"]) if parsed.get("new_date") else "?"
+            tp = f" в {parsed['new_time']}" if parsed.get("new_time") else ""
+            text = f"Перенести «{event['title']}» на {when}{tp}?"
+            btn = "✅ Перенести"
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text=btn, callback_data=f"cal_do:{token}"),
+                    InlineKeyboardButton(text="✖️ Отмена", callback_data=f"cal_cancel:{token}"),
+                ]
+            ]
+        )
+        await message.answer(text, reply_markup=kb)
         return
 
     if kind == "big_task":

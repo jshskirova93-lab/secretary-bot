@@ -50,8 +50,11 @@ cp .env.example .env
 5. Откройте https://developers.google.com/oauthplayground/
 6. Нажмите на шестерёнку (⚙️) в правом верхнем углу → отметьте
    «Use your own OAuth credentials» → вставьте Client ID и Client Secret.
-7. В левой панели найдите «Calendar API v3» → отметьте
-   `https://www.googleapis.com/auth/calendar.readonly` → «Authorize APIs».
+7. В поле «Input your own scopes» впишите
+   `https://www.googleapis.com/auth/calendar` → «Authorize APIs».
+   (Это полный доступ — чтение и запись. Только чтение:
+   `https://www.googleapis.com/auth/calendar.readonly`, но тогда бот
+   не сможет создавать события.)
 8. Войдите в свой Google-аккаунт и разрешите доступ.
 9. Нажмите «Exchange authorization code for tokens» → скопируйте
    **Refresh token**.
