@@ -39,7 +39,15 @@ async def send_morning_plan(bot) -> None:
     ]
     tomorrow_events = calendar_integration.get_tomorrow_events()
 
-    plan_text = ai.generate_morning_plan(tasks, events, tomorrow_tasks, tomorrow_events)
+    # Нагрузка на 2 недели вперёд — чтобы ИИ мог заметить перекос по дням
+    load = database.tasks_load_by_day(
+        config.OWNER_CHAT_ID, today_str, (today + timedelta(days=14)).isoformat()
+    )
+    facts = [dict(f) for f in database.list_facts(config.OWNER_CHAT_ID)]
+
+    plan_text = ai.generate_morning_plan(
+        tasks, events, tomorrow_tasks, tomorrow_events, load, facts
+    )
     await bot.send_message(config.OWNER_CHAT_ID, f"☀️ Доброе утро! План на сегодня:\n\n{plan_text}")
 
 

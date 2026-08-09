@@ -18,6 +18,7 @@
 """
 import asyncio
 import logging
+import uuid
 from datetime import date, timedelta
 
 from aiogram import Bot, Dispatcher, F
@@ -43,6 +44,11 @@ log = logging.getLogger("secretary_bot")
 bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
+# Предложенные ИИ разбивки больших задач ждут здесь подтверждения пользователя.
+# Держим в памяти процесса: если бот перезапустится, старые предложения просто
+# станут неактуальны — не страшно, пользователь повторит запрос.
+_pending_big_tasks: dict[str, dict] = {}
+
 
 def _owner_only(user_id: int) -> bool:
     return user_id == config.OWNER_CHAT_ID
@@ -63,11 +69,14 @@ HELP_TEXT = (
     "Просто пиши или наговаривай — я сам разберусь, что это:\n"
     "• «завтра в 15:00 позвонить врачу, важно» → задача\n"
     "• «купил кофе за 300 рублей» → трата\n"
+    "• «подготовить презентацию для клиента» → предложу разбить на шаги\n"
+    "• «Марина — моя помощница» → запомню и буду учитывать\n"
     "• «что у меня сегодня важного?» → отвечу по твоим делам\n\n"
     "*Команды* (или кнопка ☰ слева от поля ввода):\n"
     "/today — задачи на сегодня, с кнопками «готово»\n"
     "/week — план на 7 дней вперёд\n"
     "/month — план на 30 дней вперёд\n"
+    "/memory — что я о тебе запомнил\n"
     "/spending — траты за сегодня\n"
     "   `/spending неделя` — за неделю\n"
     "   `/spending месяц` — за месяц\n"
@@ -234,6 +243,81 @@ async def cmd_spending(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
+@dp.message(Command("memory"))
+async def cmd_memory(message: Message) -> None:
+    if not _owner_only(message.from_user.id):
+        return
+    facts = database.list_facts(config.OWNER_CHAT_ID)
+    if not facts:
+        await message.answer(
+            "Пока ничего не запомнил.\n\n"
+            "Просто расскажи о себе или работе — например «Марина моя помощница» "
+            "или «по средам я не работаю» — и я это учту в планах."
+        )
+        return
+
+    lines = ["🧠 *Что я о тебе знаю:*", ""]
+    current_cat = None
+    for f in facts:
+        if f["category"] != current_cat:
+            current_cat = f["category"]
+            lines.append(f"*{current_cat.capitalize()}*")
+        lines.append(f"  • {f['fact']}  `/forget_{f['id']}`")
+    lines.append("")
+    lines.append("_Чтобы удалить факт — нажми на команду рядом с ним._")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@dp.message(F.text.regexp(r"^/forget_(\d+)$"))
+async def cmd_forget(message: Message) -> None:
+    if not _owner_only(message.from_user.id):
+        return
+    fact_id = int(message.text.split("_")[1])
+    if database.forget_fact(config.OWNER_CHAT_ID, fact_id):
+        await message.answer("Забыл ✅")
+    else:
+        await message.answer("Такого факта не нашёл.")
+
+
+@dp.callback_query(F.data.startswith("big_yes:"))
+async def on_big_yes(callback: CallbackQuery) -> None:
+    if not _owner_only(callback.from_user.id):
+        return
+    token = callback.data.split(":")[1]
+    parsed = _pending_big_tasks.pop(token, None)
+    if not parsed:
+        await callback.answer("Это предложение устарело, повтори запрос")
+        return
+    for s in parsed["steps"]:
+        database.add_task(
+            user_id=config.OWNER_CHAT_ID,
+            text=s["text"],
+            priority=s.get("priority", "обычная"),
+            due_date=s.get("due_date"),
+            source="chat",
+        )
+    await callback.answer("Сохранил шаги ✅")
+    await callback.message.edit_text(
+        f"✅ «{parsed['title']}» разбита на {len(parsed['steps'])} шагов и добавлена в задачи."
+    )
+
+
+@dp.callback_query(F.data.startswith("big_no:"))
+async def on_big_no(callback: CallbackQuery) -> None:
+    if not _owner_only(callback.from_user.id):
+        return
+    token = callback.data.split(":")[1]
+    parsed = _pending_big_tasks.pop(token, None)
+    if not parsed:
+        await callback.answer("Это предложение устарело, повтори запрос")
+        return
+    database.add_task(
+        user_id=config.OWNER_CHAT_ID, text=parsed["title"], priority="обычная", source="chat"
+    )
+    await callback.answer("Сохранил одной задачей ✅")
+    await callback.message.edit_text(f"✅ Записал одной задачей: «{parsed['title']}»")
+
+
 @dp.callback_query(F.data.startswith("done:"))
 async def on_done(callback: CallbackQuery) -> None:
     if not _owner_only(callback.from_user.id):
@@ -248,10 +332,48 @@ async def on_done(callback: CallbackQuery) -> None:
 
 
 async def _handle_incoming_text(message: Message, text: str) -> None:
-    """Понимаем, что прислал пользователь: задачу, трату денег или просто реплику."""
-    parsed = ai.parse_message(text)
+    """Понимаем, что прислал пользователь: задачу, трату, факт для памяти,
+    крупную задачу для разбивки на шаги или просто реплику."""
+    facts = [dict(f) for f in database.list_facts(config.OWNER_CHAT_ID)]
+    parsed = ai.parse_message(text, facts)
     kind = parsed.get("kind")
     source = "voice" if message.voice else "chat"
+
+    if kind == "fact":
+        database.remember_fact(
+            user_id=config.OWNER_CHAT_ID,
+            topic=parsed["topic"],
+            fact=parsed["fact"],
+            category=parsed.get("category", "прочее"),
+        )
+        await message.answer(f"Запомнил: {parsed['fact']} 🧠")
+        return
+
+    if kind == "big_task":
+        steps = parsed.get("steps", [])
+        if not steps:
+            return
+        # Кладём шаги во временное хранилище — сохраним, только если пользователь согласится
+        token = str(uuid.uuid4())[:8]
+        _pending_big_tasks[token] = parsed
+
+        lines = [f"Задача «{parsed['title']}» большая. Предлагаю разбить так:", ""]
+        for i, s in enumerate(steps, 1):
+            when = f" — {s['due_date']}" if s.get("due_date") else ""
+            lines.append(f"{i}. {s['text']}{when}")
+        lines.append("")
+        lines.append("Сохранить эти шаги как отдельные задачи?")
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Да, сохранить", callback_data=f"big_yes:{token}"),
+                    InlineKeyboardButton(text="Одной задачей", callback_data=f"big_no:{token}"),
+                ]
+            ]
+        )
+        await message.answer("\n".join(lines), reply_markup=kb)
+        return
 
     if kind == "task":
         database.add_task(
@@ -286,7 +408,11 @@ async def _handle_incoming_text(message: Message, text: str) -> None:
         return
 
     open_tasks = [dict(r) for r in database.list_open_tasks(config.OWNER_CHAT_ID)]
-    reply = ai.chat_reply(text, open_tasks)
+    today = date.today()
+    load = database.tasks_load_by_day(
+        config.OWNER_CHAT_ID, today.isoformat(), (today + timedelta(days=30)).isoformat()
+    )
+    reply = ai.chat_reply(text, open_tasks, facts, load)
     await message.answer(reply)
 
 
@@ -321,6 +447,7 @@ async def setup_bot_commands() -> None:
             BotCommand(command="week", description="🗓 План на 7 дней"),
             BotCommand(command="month", description="📆 План на 30 дней"),
             BotCommand(command="spending", description="💰 Траты (день/неделя/месяц)"),
+            BotCommand(command="memory", description="🧠 Что я о тебе помню"),
             BotCommand(command="plan", description="☀️ Прислать план сейчас"),
             BotCommand(command="report", description="🌙 Прислать итоги дня"),
             BotCommand(command="help", description="❓ Как пользоваться"),

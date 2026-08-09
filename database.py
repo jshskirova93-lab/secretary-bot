@@ -27,6 +27,18 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 """
 
+MEMORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    topic TEXT NOT NULL,                        -- о чём факт: имя человека, проект, привычка
+    fact TEXT NOT NULL,                         -- сам факт
+    category TEXT NOT NULL DEFAULT 'прочее',    -- люди / проекты / привычки / прочее
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, topic)
+);
+"""
+
 EXPENSES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS expenses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +68,7 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.execute(SCHEMA)
         conn.execute(EXPENSES_SCHEMA)
+        conn.execute(MEMORY_SCHEMA)
 
 
 def add_task(
@@ -177,6 +190,46 @@ def list_expenses_since(user_id: int, since_date: str) -> list[sqlite3.Row]:
                ORDER BY created_at DESC""",
             (user_id, since_date),
         ).fetchall()
+
+
+def tasks_load_by_day(user_id: int, date_from: str, date_to: str) -> dict[str, int]:
+    """Сколько незакрытых задач на каждый день периода — чтобы ИИ видел перекос нагрузки."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT due_date, COUNT(*) AS cnt FROM tasks
+               WHERE user_id = ? AND status = 'open' AND due_date IS NOT NULL
+               AND due_date >= ? AND due_date <= ?
+               GROUP BY due_date ORDER BY due_date""",
+            (user_id, date_from, date_to),
+        ).fetchall()
+        return {r["due_date"]: r["cnt"] for r in rows}
+
+
+# --- Память бота (факты о пользователе) ---
+
+def remember_fact(user_id: int, topic: str, fact: str, category: str = "прочее") -> None:
+    """Сохраняет факт. Если факт по этой теме уже есть — обновляет его."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO memory (user_id, topic, fact, category, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, topic) DO UPDATE SET fact = excluded.fact,
+                                                          category = excluded.category""",
+            (user_id, topic, fact, category, datetime.now().isoformat()),
+        )
+
+
+def list_facts(user_id: int) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM memory WHERE user_id = ? ORDER BY category, topic", (user_id,)
+        ).fetchall()
+
+
+def forget_fact(user_id: int, fact_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM memory WHERE id = ? AND user_id = ?", (fact_id, user_id))
+        return cur.rowcount > 0
 
 
 def expenses_summary(user_id: int, since_date: str) -> dict:
