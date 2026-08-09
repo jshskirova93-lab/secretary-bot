@@ -1,0 +1,81 @@
+"""
+Чтение событий из Google Calendar на сегодня.
+
+Права запрашиваются только на чтение (calendar.readonly) — бот не может
+создавать или менять события в вашем календаре.
+
+Первый запуск: откроется браузер для входа в Google-аккаунт, после этого
+токен сохранится в GOOGLE_TOKEN_PATH и повторный вход не понадобится.
+
+Если Google Calendar не настроен (нет credentials.json) — бот просто
+работает без событий календаря, ничего не ломается.
+"""
+import os
+import datetime as dt
+
+import config
+
+SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+
+
+def _get_service():
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+    except ImportError:
+        return None
+
+    if not os.path.exists(config.GOOGLE_CREDENTIALS_PATH):
+        return None
+
+    creds = None
+    if os.path.exists(config.GOOGLE_TOKEN_PATH):
+        creds = Credentials.from_authorized_user_file(config.GOOGLE_TOKEN_PATH, SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(config.GOOGLE_CREDENTIALS_PATH, SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(config.GOOGLE_TOKEN_PATH, "w") as f:
+            f.write(creds.to_json())
+
+    return build("calendar", "v3", credentials=creds)
+
+
+def get_today_events() -> list[dict]:
+    """Возвращает список сегодняшних событий: [{title, start, end}, ...].
+    Пустой список, если Google Calendar не настроен или произошла ошибка."""
+    service = _get_service()
+    if service is None:
+        return []
+
+    try:
+        now = dt.datetime.now()
+        start_of_day = dt.datetime.combine(now.date(), dt.time.min).isoformat() + "Z"
+        end_of_day = dt.datetime.combine(now.date(), dt.time.max).isoformat() + "Z"
+
+        events_result = (
+            service.events()
+            .list(
+                calendarId=config.GOOGLE_CALENDAR_ID,
+                timeMin=start_of_day,
+                timeMax=end_of_day,
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
+        )
+        events = events_result.get("items", [])
+        result = []
+        for e in events:
+            start = e["start"].get("dateTime", e["start"].get("date"))
+            end = e["end"].get("dateTime", e["end"].get("date"))
+            result.append({"title": e.get("summary", "Без названия"), "start": start, "end": end})
+        return result
+    except Exception:
+        # Не роняем бота из-за проблем с календарём — просто работаем без него
+        return []
