@@ -65,26 +65,26 @@ def _get_service():
     return build("calendar", "v3", credentials=creds)
 
 
-def get_today_events() -> list[dict]:
-    """Возвращает список сегодняшних событий: [{title, start, end}, ...].
+def get_events_range(date_from: dt.date, date_to: dt.date) -> list[dict]:
+    """События календаря за период (включительно): [{title, start, end, date}, ...].
     Пустой список, если Google Calendar не настроен или произошла ошибка."""
     service = _get_service()
     if service is None:
         return []
 
     try:
-        now = dt.datetime.now()
-        start_of_day = dt.datetime.combine(now.date(), dt.time.min).isoformat() + "Z"
-        end_of_day = dt.datetime.combine(now.date(), dt.time.max).isoformat() + "Z"
+        time_min = dt.datetime.combine(date_from, dt.time.min).isoformat() + "Z"
+        time_max = dt.datetime.combine(date_to, dt.time.max).isoformat() + "Z"
 
         events_result = (
             service.events()
             .list(
                 calendarId=config.GOOGLE_CALENDAR_ID,
-                timeMin=start_of_day,
-                timeMax=end_of_day,
+                timeMin=time_min,
+                timeMax=time_max,
                 singleEvents=True,
                 orderBy="startTime",
+                maxResults=250,
             )
             .execute()
         )
@@ -93,8 +93,28 @@ def get_today_events() -> list[dict]:
         for e in events:
             start = e["start"].get("dateTime", e["start"].get("date"))
             end = e["end"].get("dateTime", e["end"].get("date"))
-            result.append({"title": e.get("summary", "Без названия"), "start": start, "end": end})
+            result.append(
+                {
+                    "title": e.get("summary", "Без названия"),
+                    "start": start,
+                    "end": end,
+                    # Дата в виде YYYY-MM-DD — удобно группировать события по дням
+                    "date": start[:10],
+                }
+            )
         return result
     except Exception:
         # Не роняем бота из-за проблем с календарём — просто работаем без него
         return []
+
+
+def get_today_events() -> list[dict]:
+    """События на сегодня."""
+    today = dt.date.today()
+    return get_events_range(today, today)
+
+
+def get_tomorrow_events() -> list[dict]:
+    """События на завтра — чтобы утром предупредить о важном заранее."""
+    tomorrow = dt.date.today() + dt.timedelta(days=1)
+    return get_events_range(tomorrow, tomorrow)

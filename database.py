@@ -92,6 +92,29 @@ def list_open_tasks(user_id: int, due_date: Optional[str] = None) -> list[sqlite
         return rows
 
 
+def list_open_tasks_range(user_id: int, date_from: str, date_to: str) -> list[sqlite3.Row]:
+    """Незакрытые задачи с датой в указанном периоде (включительно).
+    Задачи без даты сюда не попадают — они показываются в плане каждый день,
+    а в обзоре на неделю/месяц только загромождали бы список."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM tasks WHERE user_id = ? AND status = 'open'
+               AND due_date IS NOT NULL AND due_date >= ? AND due_date <= ?
+               ORDER BY due_date, due_time IS NULL, due_time""",
+            (user_id, date_from, date_to),
+        ).fetchall()
+
+
+def list_undated_open_tasks(user_id: int) -> list[sqlite3.Row]:
+    """Незакрытые задачи без конкретной даты."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM tasks WHERE user_id = ? AND status = 'open' AND due_date IS NULL
+               ORDER BY created_at""",
+            (user_id,),
+        ).fetchall()
+
+
 def list_tasks_created_between(user_id: int, day: str) -> list[sqlite3.Row]:
     """Задачи, у которых due_date == day, независимо от статуса — для вечернего отчёта."""
     with get_conn() as conn:

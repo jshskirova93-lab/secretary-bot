@@ -103,17 +103,31 @@ def parse_message(user_text: str) -> dict:
     return {"kind": "chat"}
 
 
-def generate_morning_plan(tasks: list[dict], calendar_events: list[dict]) -> str:
-    """tasks: список словарей задач. calendar_events: список событий из Google Calendar."""
-    payload = {"задачи": tasks, "события_календаря": calendar_events}
+def generate_morning_plan(
+    tasks: list[dict],
+    calendar_events: list[dict],
+    tomorrow_tasks: list[dict] | None = None,
+    tomorrow_events: list[dict] | None = None,
+) -> str:
+    """tasks/calendar_events — на сегодня. tomorrow_* — чтобы предупредить о завтрашнем."""
+    payload = {
+        "задачи_сегодня": tasks,
+        "события_календаря_сегодня": calendar_events,
+        "задачи_завтра": tomorrow_tasks or [],
+        "события_календаря_завтра": tomorrow_events or [],
+    }
     response = client.messages.create(
         model=config.CLAUDE_MODEL,
-        max_tokens=800,
+        max_tokens=900,
         system=(
             "Ты — личный секретарь. Пиши по-русски, тепло и по-деловому, без канцелярита. "
             "Составь утренний план на день: сначала самое важное и срочное, потом остальное. "
             "Учитывай время встреч из календаря — не создавай конфликтов по времени в плане. "
-            "Если задач и событий нет — напиши короткое доброе утреннее сообщение без выдуманных дел. "
+            "Если задач и событий на сегодня нет — напиши короткое доброе утреннее сообщение "
+            "без выдуманных дел. "
+            "В самом конце, если на завтра есть что-то важное (встреча с фиксированным временем, "
+            "срочная задача или что-то требующее подготовки заранее), добавь одну короткую строку "
+            "вида «На заметку: завтра...». Если на завтра ничего важного — эту строку не добавляй вовсе. "
             "Не используй лишние заголовки, пиши компактно, можно с эмодзи по одному на пункт."
         ),
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],

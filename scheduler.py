@@ -4,6 +4,8 @@
 Почему APScheduler: лёгкий, не требует отдельного сервиса (в отличие от cron
 на уровне ОС), работает прямо внутри процесса бота с учётом часового пояса.
 """
+from datetime import date, timedelta
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -23,10 +25,21 @@ def _row_to_dict(row) -> dict:
 
 
 async def send_morning_plan(bot) -> None:
-    today = database.today_str()
-    tasks = [_row_to_dict(r) for r in database.list_open_tasks(config.OWNER_CHAT_ID, due_date=today)]
+    today = date.today()
+    today_str = today.isoformat()
+    tomorrow_str = (today + timedelta(days=1)).isoformat()
+
+    tasks = [_row_to_dict(r) for r in database.list_open_tasks(config.OWNER_CHAT_ID, due_date=today_str)]
     events = calendar_integration.get_today_events()
-    plan_text = ai.generate_morning_plan(tasks, events)
+
+    # Заглядываем на завтра, чтобы предупредить о важном заранее
+    tomorrow_tasks = [
+        _row_to_dict(r)
+        for r in database.list_open_tasks_range(config.OWNER_CHAT_ID, tomorrow_str, tomorrow_str)
+    ]
+    tomorrow_events = calendar_integration.get_tomorrow_events()
+
+    plan_text = ai.generate_morning_plan(tasks, events, tomorrow_tasks, tomorrow_events)
     await bot.send_message(config.OWNER_CHAT_ID, f"☀️ Доброе утро! План на сегодня:\n\n{plan_text}")
 
 

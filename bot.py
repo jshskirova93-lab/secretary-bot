@@ -4,6 +4,8 @@
 Команды:
   /start    — приветствие и подсказка как пользоваться
   /today    — список задач на сегодня с кнопками "готово"
+  /week     — задачи и события календаря на 7 дней вперёд
+  /month    — то же на 30 дней вперёд
   /plan     — принудительно прислать утренний план прямо сейчас
   /report   — принудительно прислать вечерний отчёт прямо сейчас
   /spending — траты за день/неделю/месяц (например /spending неделя)
@@ -26,6 +28,7 @@ import config
 import database
 import ai
 import voice
+import calendar_integration
 import scheduler as scheduler_module
 
 logging.basicConfig(level=logging.INFO)
@@ -60,6 +63,9 @@ async def cmd_start(message: Message) -> None:
         f"а вечером в {config.EVENING_TIME} — итог по незакрытым делам.\n\n"
         "Команды:\n"
         "/today — задачи на сегодня\n"
+        "/week — план на 7 дней вперёд\n"
+        "/month — план на 30 дней вперёд\n"
+        "/spending — сколько потратил (день / неделя / месяц)\n"
         "/plan — прислать план прямо сейчас\n"
         "/report — прислать вечерний отчёт прямо сейчас"
     )
@@ -92,6 +98,81 @@ async def cmd_report(message: Message) -> None:
     if not _owner_only(message.from_user.id):
         return
     await scheduler_module.send_evening_report(bot)
+
+
+MONTHS_RU = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
+
+def _format_day_header(d: date) -> str:
+    today = date.today()
+    if d == today:
+        prefix = "Сегодня, "
+    elif d == today + timedelta(days=1):
+        prefix = "Завтра, "
+    else:
+        prefix = ""
+    return f"{prefix}{d.day} {MONTHS_RU[d.month - 1]} ({WEEKDAYS_RU[d.weekday()]})"
+
+
+async def _send_overview(message: Message, days: int, title: str) -> None:
+    """Общий обзор задач и событий календаря на N дней вперёд, по дням."""
+    today = date.today()
+    last_day = today + timedelta(days=days - 1)
+
+    tasks = database.list_open_tasks_range(
+        config.OWNER_CHAT_ID, today.isoformat(), last_day.isoformat()
+    )
+    events = calendar_integration.get_events_range(today, last_day)
+
+    # Складываем задачи и события в один словарь по датам
+    by_day: dict[str, list[str]] = {}
+    for t in tasks:
+        time_part = f"{t['due_time']} — " if t["due_time"] else ""
+        mark = "❗ " if t["priority"] == "высокая" else ""
+        by_day.setdefault(t["due_date"], []).append(f"  • {mark}{time_part}{t['text']}")
+    for e in events:
+        time_part = ""
+        if "T" in e["start"]:
+            time_part = e["start"][11:16] + " — "
+        by_day.setdefault(e["date"], []).append(f"  📅 {time_part}{e['title']}")
+
+    lines = [title, ""]
+    if by_day:
+        for day_str in sorted(by_day.keys()):
+            d = date.fromisoformat(day_str)
+            lines.append(f"*{_format_day_header(d)}*")
+            lines.extend(sorted(by_day[day_str]))
+            lines.append("")
+    else:
+        lines.append("На этот период ничего не запланировано.")
+        lines.append("")
+
+    undated = database.list_undated_open_tasks(config.OWNER_CHAT_ID)
+    if undated:
+        lines.append("*Без конкретной даты:*")
+        for t in undated:
+            mark = "❗ " if t["priority"] == "высокая" else ""
+            lines.append(f"  • {mark}{t['text']}")
+
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@dp.message(Command("week"))
+async def cmd_week(message: Message) -> None:
+    if not _owner_only(message.from_user.id):
+        return
+    await _send_overview(message, days=7, title="🗓 Ближайшие 7 дней:")
+
+
+@dp.message(Command("month"))
+async def cmd_month(message: Message) -> None:
+    if not _owner_only(message.from_user.id):
+        return
+    await _send_overview(message, days=30, title="🗓 Ближайшие 30 дней:")
 
 
 @dp.message(Command("spending"))
