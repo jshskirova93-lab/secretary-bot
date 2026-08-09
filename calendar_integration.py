@@ -4,11 +4,15 @@
 Права запрашиваются только на чтение (calendar.readonly) — бот не может
 создавать или менять события в вашем календаре.
 
-Первый запуск: откроется браузер для входа в Google-аккаунт, после этого
-токен сохранится в GOOGLE_TOKEN_PATH и повторный вход не понадобится.
+Два способа авторизации:
+1. Через переменные окружения (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) —
+   рабочий вариант для сервера (Railway), где нет браузера. Токен получается
+   один раз через Google OAuth Playground (см. README) и больше не истекает.
+2. Через файлы credentials.json/token.json с открытием браузера — удобно
+   для локального запуска бота на своём компьютере.
 
-Если Google Calendar не настроен (нет credentials.json) — бот просто
-работает без событий календаря, ничего не ломается.
+Если Google Calendar вообще не настроен — бот просто работает без событий
+календаря, ничего не ломается.
 """
 import os
 import datetime as dt
@@ -22,13 +26,28 @@ def _get_service():
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
         from googleapiclient.discovery import build
     except ImportError:
         return None
 
+    # Способ 1: через переменные окружения (для сервера, без браузера)
+    if config.GOOGLE_OAUTH_CLIENT_ID and config.GOOGLE_OAUTH_CLIENT_SECRET and config.GOOGLE_OAUTH_REFRESH_TOKEN:
+        creds = Credentials(
+            token=None,
+            refresh_token=config.GOOGLE_OAUTH_REFRESH_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=config.GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=config.GOOGLE_OAUTH_CLIENT_SECRET,
+            scopes=SCOPES,
+        )
+        creds.refresh(Request())
+        return build("calendar", "v3", credentials=creds)
+
+    # Способ 2: локальный запуск с файлами credentials.json/token.json
     if not os.path.exists(config.GOOGLE_CREDENTIALS_PATH):
         return None
+
+    from google_auth_oauthlib.flow import InstalledAppFlow
 
     creds = None
     if os.path.exists(config.GOOGLE_TOKEN_PATH):

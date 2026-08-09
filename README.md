@@ -35,17 +35,41 @@ cp .env.example .env
 
 ## Настройка Google Календаря (опционально)
 
+Если бот работает на сервере (Railway и т.п.), браузер там открыть нельзя,
+поэтому токен получаем один раз через Google OAuth Playground.
+
 1. Зайдите на https://console.cloud.google.com/ → создайте проект.
-2. Включите **Google Calendar API** (APIs & Services → Library).
-3. Создайте учётные данные: APIs & Services → Credentials → Create
-   Credentials → OAuth client ID → тип **Desktop app**.
-4. Скачайте файл, переименуйте в `credentials.json` и положите в папку
-   `secretary_bot/` (рядом с `bot.py`).
-5. При первом запуске бот откроет браузер для входа в Google-аккаунт —
-   это нужно сделать один раз, дальше токен сохранится сам.
+2. Включите **Google Calendar API** (APIs & Services → Library → найти
+   Google Calendar API → Enable).
+3. Настройте экран согласия: APIs & Services → OAuth consent screen →
+   тип **External** → заполните название приложения и email → сохраните.
+   Добавьте свой email в Test users.
+4. Создайте учётные данные: APIs & Services → Credentials → Create
+   Credentials → OAuth client ID → тип **Desktop app** → создать.
+   Появятся **Client ID** и **Client Secret** — сохраните их.
+5. Откройте https://developers.google.com/oauthplayground/
+6. Нажмите на шестерёнку (⚙️) в правом верхнем углу → отметьте
+   «Use your own OAuth credentials» → вставьте Client ID и Client Secret.
+7. В левой панели найдите «Calendar API v3» → отметьте
+   `https://www.googleapis.com/auth/calendar.readonly` → «Authorize APIs».
+8. Войдите в свой Google-аккаунт и разрешите доступ.
+9. Нажмите «Exchange authorization code for tokens» → скопируйте
+   **Refresh token**.
+10. Впишите в `.env` (или в переменные окружения на сервере):
+    `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+    `GOOGLE_OAUTH_REFRESH_TOKEN`.
+
+Токен через этот способ не истекает, повторять процедуру не нужно.
 
 Если пропустить этот раздел — бот просто не будет добавлять события
 календаря в план, всё остальное работает как обычно.
+
+### Локальный запуск (альтернатива)
+
+Если запускаете бота у себя на компьютере (не на сервере), можно проще:
+скачайте файл учётных данных, переименуйте в `credentials.json`, положите
+в папку `secretary_bot/` — при первом запуске бот сам откроет браузер для
+входа, токен сохранится в `token.json` автоматически.
 
 ## Запуск
 
