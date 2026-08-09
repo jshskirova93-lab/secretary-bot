@@ -22,7 +22,13 @@ from datetime import date, timedelta
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BotCommand,
+)
 
 import config
 import database
@@ -52,23 +58,43 @@ def _tasks_keyboard(rows) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+HELP_TEXT = (
+    "*Как пользоваться*\n\n"
+    "Просто пиши или наговаривай — я сам разберусь, что это:\n"
+    "• «завтра в 15:00 позвонить врачу, важно» → задача\n"
+    "• «купил кофе за 300 рублей» → трата\n"
+    "• «что у меня сегодня важного?» → отвечу по твоим делам\n\n"
+    "*Команды* (или кнопка ☰ слева от поля ввода):\n"
+    "/today — задачи на сегодня, с кнопками «готово»\n"
+    "/week — план на 7 дней вперёд\n"
+    "/month — план на 30 дней вперёд\n"
+    "/spending — траты за сегодня\n"
+    "   `/spending неделя` — за неделю\n"
+    "   `/spending месяц` — за месяц\n"
+    "/plan — прислать план прямо сейчас\n"
+    "/report — прислать итоги дня прямо сейчас\n"
+    "/help — эта подсказка"
+)
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     if not _owner_only(message.from_user.id):
         return
     await message.answer(
-        "Привет! Я твой личный секретарь.\n\n"
-        "Просто пиши мне задачи текстом или голосом — я их запомню.\n"
+        "Привет! Я твой личный секретарь 👋\n\n"
         f"Каждое утро в {config.MORNING_TIME} пришлю план на день, "
-        f"а вечером в {config.EVENING_TIME} — итог по незакрытым делам.\n\n"
-        "Команды:\n"
-        "/today — задачи на сегодня\n"
-        "/week — план на 7 дней вперёд\n"
-        "/month — план на 30 дней вперёд\n"
-        "/spending — сколько потратил (день / неделя / месяц)\n"
-        "/plan — прислать план прямо сейчас\n"
-        "/report — прислать вечерний отчёт прямо сейчас"
+        f"вечером в {config.EVENING_TIME} — что осталось незакрытым и сколько потрачено.\n\n"
+        + HELP_TEXT,
+        parse_mode="Markdown",
     )
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    if not _owner_only(message.from_user.id):
+        return
+    await message.answer(HELP_TEXT, parse_mode="Markdown")
 
 
 @dp.message(Command("today"))
@@ -286,8 +312,25 @@ async def on_voice(message: Message) -> None:
     await _handle_incoming_text(message, text)
 
 
+async def setup_bot_commands() -> None:
+    """Меню команд — появляется по кнопке слева от поля ввода в Telegram.
+    Так не нужно помнить команды наизусть: видно, что есть и что делает."""
+    await bot.set_my_commands(
+        [
+            BotCommand(command="today", description="📋 Задачи на сегодня"),
+            BotCommand(command="week", description="🗓 План на 7 дней"),
+            BotCommand(command="month", description="📆 План на 30 дней"),
+            BotCommand(command="spending", description="💰 Траты (день/неделя/месяц)"),
+            BotCommand(command="plan", description="☀️ Прислать план сейчас"),
+            BotCommand(command="report", description="🌙 Прислать итоги дня"),
+            BotCommand(command="help", description="❓ Как пользоваться"),
+        ]
+    )
+
+
 async def main() -> None:
     database.init_db()
+    await setup_bot_commands()
     scheduler_module.setup_scheduler(bot)
     log.info("Бот запущен")
     await dp.start_polling(bot)
