@@ -9,8 +9,26 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, date
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import config
+
+
+def _tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(config.TIMEZONE)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _today_local() -> date:
+    """Сегодня по времени пользователя. Сервер живёт по UTC, поэтому просто
+    date.today() дало бы неверный день вечером или ранним утром."""
+    return datetime.now(_tz()).date()
+
+
+def _now_local_iso() -> str:
+    return datetime.now(_tz()).isoformat()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -83,7 +101,7 @@ def add_task(
         cur = conn.execute(
             """INSERT INTO tasks (user_id, text, priority, due_date, due_time, source, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, text, priority, due_date, due_time, source, datetime.now().isoformat()),
+            (user_id, text, priority, due_date, due_time, source, _now_local_iso()),
         )
         return cur.lastrowid
 
@@ -141,7 +159,7 @@ def complete_task(task_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ? AND status = 'open'",
-            (datetime.now().isoformat(), task_id),
+            (_now_local_iso(), task_id),
         )
         return cur.rowcount > 0
 
@@ -160,7 +178,7 @@ def get_task(task_id: int) -> Optional[sqlite3.Row]:
 
 
 def today_str() -> str:
-    return date.today().isoformat()
+    return _today_local().isoformat()
 
 
 # --- Расходы ---
@@ -177,7 +195,7 @@ def add_expense(
         cur = conn.execute(
             """INSERT INTO expenses (user_id, amount, currency, category, description, source, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, amount, currency, category, description, source, datetime.now().isoformat()),
+            (user_id, amount, currency, category, description, source, _now_local_iso()),
         )
         return cur.lastrowid
 
@@ -215,7 +233,7 @@ def remember_fact(user_id: int, topic: str, fact: str, category: str = "проч
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(user_id, topic) DO UPDATE SET fact = excluded.fact,
                                                           category = excluded.category""",
-            (user_id, topic, fact, category, datetime.now().isoformat()),
+            (user_id, topic, fact, category, _now_local_iso()),
         )
 
 

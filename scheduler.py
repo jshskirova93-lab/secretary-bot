@@ -25,7 +25,7 @@ def _row_to_dict(row) -> dict:
 
 
 async def send_morning_plan(bot) -> None:
-    today = date.today()
+    today = calendar_integration.today_local()
     today_str = today.isoformat()
     tomorrow_str = (today + timedelta(days=1)).isoformat()
 

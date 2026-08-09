@@ -15,36 +15,54 @@
 календаря, ничего не ломается.
 """
 import os
+import logging
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import config
 
+log = logging.getLogger("secretary_bot.calendar")
+
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+
+# Последняя ошибка календаря — чтобы показать её в диагностике (/caltest)
+last_error: str | None = None
 
 
 def _get_service():
+    global last_error
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
-    except ImportError:
+    except ImportError as e:
+        last_error = f"Библиотеки Google не установлены: {e}"
+        log.warning(last_error)
         return None
 
     # Способ 1: через переменные окружения (для сервера, без браузера)
     if config.GOOGLE_OAUTH_CLIENT_ID and config.GOOGLE_OAUTH_CLIENT_SECRET and config.GOOGLE_OAUTH_REFRESH_TOKEN:
-        creds = Credentials(
-            token=None,
-            refresh_token=config.GOOGLE_OAUTH_REFRESH_TOKEN,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=config.GOOGLE_OAUTH_CLIENT_ID,
-            client_secret=config.GOOGLE_OAUTH_CLIENT_SECRET,
-            scopes=SCOPES,
-        )
-        creds.refresh(Request())
-        return build("calendar", "v3", credentials=creds)
+        try:
+            creds = Credentials(
+                token=None,
+                refresh_token=config.GOOGLE_OAUTH_REFRESH_TOKEN,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=config.GOOGLE_OAUTH_CLIENT_ID,
+                client_secret=config.GOOGLE_OAUTH_CLIENT_SECRET,
+                scopes=SCOPES,
+            )
+            creds.refresh(Request())
+            last_error = None
+            return build("calendar", "v3", credentials=creds)
+        except Exception as e:
+            last_error = f"Не удалось обновить токен Google: {type(e).__name__}: {e}"
+            log.warning(last_error)
+            return None
 
     # Способ 2: локальный запуск с файлами credentials.json/token.json
     if not os.path.exists(config.GOOGLE_CREDENTIALS_PATH):
+        last_error = "Google Calendar не настроен: нет ни переменных OAuth, ни credentials.json"
+        log.warning(last_error)
         return None
 
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -65,16 +83,33 @@ def _get_service():
     return build("calendar", "v3", credentials=creds)
 
 
+def _tz() -> ZoneInfo:
+    """Часовой пояс пользователя. Важно: сервер живёт по UTC, а дни у пользователя
+    начинаются по его местному времени — иначе события уезжают на соседний день."""
+    try:
+        return ZoneInfo(config.TIMEZONE)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def today_local() -> dt.date:
+    """Сегодняшняя дата по часовому поясу пользователя, а не по времени сервера."""
+    return dt.datetime.now(_tz()).date()
+
+
 def get_events_range(date_from: dt.date, date_to: dt.date) -> list[dict]:
     """События календаря за период (включительно): [{title, start, end, date}, ...].
     Пустой список, если Google Calendar не настроен или произошла ошибка."""
+    global last_error
     service = _get_service()
     if service is None:
         return []
 
     try:
-        time_min = dt.datetime.combine(date_from, dt.time.min).isoformat() + "Z"
-        time_max = dt.datetime.combine(date_to, dt.time.max).isoformat() + "Z"
+        tz = _tz()
+        # Границы периода в местном времени пользователя
+        time_min = dt.datetime.combine(date_from, dt.time.min, tzinfo=tz).isoformat()
+        time_max = dt.datetime.combine(date_to, dt.time.max, tzinfo=tz).isoformat()
 
         events_result = (
             service.events()
@@ -85,6 +120,7 @@ def get_events_range(date_from: dt.date, date_to: dt.date) -> list[dict]:
                 singleEvents=True,
                 orderBy="startTime",
                 maxResults=250,
+                timeZone=config.TIMEZONE,
             )
             .execute()
         )
@@ -102,19 +138,75 @@ def get_events_range(date_from: dt.date, date_to: dt.date) -> list[dict]:
                     "date": start[:10],
                 }
             )
+        last_error = None
+        log.info("Календарь: %s..%s — получено событий: %d", date_from, date_to, len(result))
         return result
-    except Exception:
+    except Exception as e:
+        last_error = f"Ошибка запроса к календарю: {type(e).__name__}: {e}"
+        log.warning(last_error)
         # Не роняем бота из-за проблем с календарём — просто работаем без него
         return []
 
 
 def get_today_events() -> list[dict]:
     """События на сегодня."""
-    today = dt.date.today()
+    today = today_local()
     return get_events_range(today, today)
 
 
 def get_tomorrow_events() -> list[dict]:
     """События на завтра — чтобы утром предупредить о важном заранее."""
-    tomorrow = dt.date.today() + dt.timedelta(days=1)
+    tomorrow = today_local() + dt.timedelta(days=1)
     return get_events_range(tomorrow, tomorrow)
+
+
+def diagnose() -> str:
+    """Понятный отчёт о состоянии подключения к календарю — для команды /caltest."""
+    lines = ["🔍 *Проверка Google Календаря*", ""]
+
+    has_env = bool(
+        config.GOOGLE_OAUTH_CLIENT_ID
+        and config.GOOGLE_OAUTH_CLIENT_SECRET
+        and config.GOOGLE_OAUTH_REFRESH_TOKEN
+    )
+    lines.append(f"Ключи доступа заданы: {'да ✅' if has_env else 'нет ❌'}")
+    lines.append(f"Календарь: `{config.GOOGLE_CALENDAR_ID}`")
+    lines.append(f"Часовой пояс: {config.TIMEZONE}")
+    lines.append(f"Сегодня по вашему времени: {today_local()}")
+    lines.append("")
+
+    service = _get_service()
+    if service is None:
+        lines.append("Подключение: не удалось ❌")
+        lines.append(f"Причина: `{last_error or 'неизвестна'}`")
+        return "\n".join(lines)
+
+    lines.append("Подключение: успешно ✅")
+
+    # Пробуем прочитать список календарей — так видно, к чему вообще есть доступ
+    try:
+        cal_list = service.calendarList().list(maxResults=20).execute().get("items", [])
+        lines.append("")
+        lines.append(f"*Доступные календари ({len(cal_list)}):*")
+        for c in cal_list:
+            mark = " ← основной" if c.get("primary") else ""
+            lines.append(f"  • {c.get('summary', '?')}{mark}")
+            lines.append(f"    `{c.get('id')}`")
+    except Exception as e:
+        lines.append(f"Не удалось получить список календарей: `{e}`")
+
+    today = today_local()
+    events_today = get_events_range(today, today)
+    events_month = get_events_range(today, today + dt.timedelta(days=30))
+    lines.append("")
+    lines.append(f"Событий на сегодня: {len(events_today)}")
+    lines.append(f"Событий на 30 дней вперёд: {len(events_month)}")
+    if events_month:
+        lines.append("")
+        lines.append("*Ближайшие:*")
+        for e in events_month[:5]:
+            lines.append(f"  • {e['date']} — {e['title']}")
+    if last_error:
+        lines.append("")
+        lines.append(f"Последняя ошибка: `{last_error}`")
+    return "\n".join(lines)

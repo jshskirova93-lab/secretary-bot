@@ -143,7 +143,7 @@ WEEKDAYS_RU = ["понедельник", "вторник", "среда", "чет
 
 
 def _format_day_header(d: date) -> str:
-    today = date.today()
+    today = calendar_integration.today_local()
     if d == today:
         prefix = "Сегодня, "
     elif d == today + timedelta(days=1):
@@ -155,7 +155,7 @@ def _format_day_header(d: date) -> str:
 
 async def _send_overview(message: Message, days: int, title: str) -> None:
     """Общий обзор задач и событий календаря на N дней вперёд, по дням."""
-    today = date.today()
+    today = calendar_integration.today_local()
     last_day = today + timedelta(days=days - 1)
 
     tasks = database.list_open_tasks_range(
@@ -217,7 +217,7 @@ async def cmd_spending(message: Message) -> None:
     parts = message.text.split(maxsplit=1)
     arg = parts[1].strip().lower() if len(parts) > 1 else "день"
 
-    today = date.today()
+    today = calendar_integration.today_local()
     if arg in ("неделя", "week"):
         since = today - timedelta(days=today.weekday())
         label = "эту неделю"
@@ -241,6 +241,16 @@ async def cmd_spending(message: Message) -> None:
     for cat, total in sorted(summary["by_category"].items(), key=lambda x: -x[1]):
         lines.append(f"• {cat}: {total:.0f}")
     await message.answer("\n".join(lines))
+
+
+@dp.message(Command("caltest"))
+async def cmd_caltest(message: Message) -> None:
+    """Диагностика Google Календаря — показывает, что именно не так, если события не видны."""
+    if not _owner_only(message.from_user.id):
+        return
+    await message.answer("Проверяю подключение к календарю...")
+    report = calendar_integration.diagnose()
+    await message.answer(report, parse_mode="Markdown")
 
 
 @dp.message(Command("memory"))
@@ -408,7 +418,7 @@ async def _handle_incoming_text(message: Message, text: str) -> None:
         return
 
     open_tasks = [dict(r) for r in database.list_open_tasks(config.OWNER_CHAT_ID)]
-    today = date.today()
+    today = calendar_integration.today_local()
     load = database.tasks_load_by_day(
         config.OWNER_CHAT_ID, today.isoformat(), (today + timedelta(days=30)).isoformat()
     )
@@ -448,6 +458,7 @@ async def setup_bot_commands() -> None:
             BotCommand(command="month", description="📆 План на 30 дней"),
             BotCommand(command="spending", description="💰 Траты (день/неделя/месяц)"),
             BotCommand(command="memory", description="🧠 Что я о тебе помню"),
+            BotCommand(command="caltest", description="🔍 Проверить Google Календарь"),
             BotCommand(command="plan", description="☀️ Прислать план сейчас"),
             BotCommand(command="report", description="🌙 Прислать итоги дня"),
             BotCommand(command="help", description="❓ Как пользоваться"),
