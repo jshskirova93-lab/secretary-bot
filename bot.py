@@ -586,7 +586,10 @@ async def _handle_incoming_text(message: Message, text: str) -> None:
     load = database.tasks_load_by_day(
         config.OWNER_CHAT_ID, today.isoformat(), (today + timedelta(days=30)).isoformat()
     )
-    reply = ai.chat_reply(text, open_tasks, facts, load)
+    # Даём ИИ и события календаря — иначе на вопрос «что у меня завтра?»
+    # он видел бы только задачи и отвечал «ничего нет»
+    events = calendar_integration.get_events_range(today, today + timedelta(days=30))
+    reply = ai.chat_reply(text, open_tasks, facts, load, events, today.isoformat())
     await message.answer(reply)
 
 

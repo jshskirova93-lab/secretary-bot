@@ -65,6 +65,15 @@ async def send_evening_report(bot) -> None:
             spend_lines.append(f"Итого: {total:.0f} {currency}")
         report_text += "\n" + "\n".join(spend_lines)
 
+    # Напоминаем про завтрашние встречи — вечером это полезнее всего
+    tomorrow_events = calendar_integration.get_tomorrow_events()
+    if tomorrow_events:
+        ev_lines = ["", "📅 Завтра в календаре:"]
+        for e in tomorrow_events:
+            time_part = f"{e['start'][11:16]} — " if "T" in e["start"] else ""
+            ev_lines.append(f"• {time_part}{e['title']}")
+        report_text += "\n" + "\n".join(ev_lines)
+
     await bot.send_message(config.OWNER_CHAT_ID, f"🌙 Итоги дня:\n\n{report_text}")
 
 

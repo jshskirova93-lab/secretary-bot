@@ -332,18 +332,28 @@ def chat_reply(
     open_tasks: list[dict],
     facts: list[dict] | None = None,
     load_by_day: dict[str, int] | None = None,
+    calendar_events: list[dict] | None = None,
+    today_str: str | None = None,
 ) -> str:
-    """Свободный диалог — например, вопрос 'что у меня сегодня важного?'."""
-    today = date.today().isoformat()
+    """Свободный диалог — например, вопрос 'что у меня завтра?'.
+    calendar_events — события из Google Календаря на ближайший месяц: без них
+    бот отвечал бы только по своим задачам и говорил «ничего нет», хотя
+    встречи в календаре есть."""
+    today = today_str or date.today().isoformat()
     response = client.messages.create(
         model=config.CLAUDE_MODEL,
         max_tokens=700,
         system=(
             f"Сегодня {today}. Ты — личный секретарь пользователя, общаешься по-русски, кратко "
             f"и по делу, дружелюбно, без канцелярита.\n"
-            f"Его текущие незакрытые задачи (JSON):\n"
+            f"Отвечая про планы на какой-то день, всегда учитывай И задачи, И события "
+            f"из календаря. Если спрашивают про завтра — смотри события с датой "
+            f"на день позже сегодняшней.\n\n"
+            f"Незакрытые задачи (JSON):\n"
             + json.dumps(open_tasks, ensure_ascii=False)
-            + "\nНагрузка по дням (сколько задач на каждый день):\n"
+            + "\n\nСобытия Google Календаря на ближайший месяц (JSON):\n"
+            + json.dumps(calendar_events or [], ensure_ascii=False)
+            + "\n\nНагрузка по дням (сколько задач на каждый день):\n"
             + json.dumps(load_by_day or {}, ensure_ascii=False)
             + _facts_block(facts)
         ),
