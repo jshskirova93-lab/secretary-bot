@@ -1,68 +1,47 @@
 """
-Распознавание голосовых сообщений.
+Рабочий процесс распознавания речи. Запускается из voice.py как отдельный процесс:
 
-Используем faster-whisper — он работает локально, поэтому не нужен отдельный
-платный сервис распознавания речи.
+    python voice_worker.py /путь/к/файлу.ogg
 
-ВАЖНО ПРО ПАМЯТЬ (главное в этом файле).
-Первая попытка чинить перерасход памяти была такой: загрузить модель, распознать,
-удалить объект модели и вызвать gc.collect(). Замеры показали, что это НЕ работает:
-объект удаляется, но операционная система не забирает освобождённую память обратно
-у процесса. Бот как занимал ~0,64 ГБ после первого голосового, так и продолжал
-занимать — а хостинг берёт деньги именно за занятую память.
+Печатает распознанный текст в стандартный вывод и завершается. Смысл именно в
+завершении: вся память, которую занял faster-whisper (модель ~145 МБ плюс
+внутренние буферы библиотеки), возвращается операционной системе целиком.
+Внутри одного долгоживущего процесса так сделать нельзя — проверено замерами.
 
-Работающее решение: распознавать в ОТДЕЛЬНОМ процессе (voice_worker.py) и сразу
-его завершать. Когда процесс завершается, система забирает всю его память
-целиком — тут уже без вариантов. Основной процесс бота остаётся на ~0,17 ГБ
-всегда, независимо от количества голосовых.
+Размер модели задаётся переменной окружения WHISPER_MODEL:
+  tiny (~75 МБ)  — быстро и дёшево, точность ниже
+  base (~145 МБ) — значение по умолчанию, разумный компромисс
+  small (~500 МБ) — точнее, но именно из-за неё и был перерасход
 """
-import logging
 import os
-import subprocess
 import sys
-import tempfile
-
-logger = logging.getLogger("secretary_bot.voice")
-
-# Путь к рабочему процессу — рядом с этим файлом, откуда бы бот ни запускался
-_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_worker.py")
-
-# Предохранитель: если распознавание зависнет, процесс будет убит через это время
-_TIMEOUT_SECONDS = int(os.getenv("WHISPER_TIMEOUT", "300"))
 
 
-def transcribe_ogg(ogg_bytes: bytes) -> str:
-    """Принимает байты голосового сообщения Telegram (формат .ogg) и возвращает текст."""
-    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-        tmp.write(ogg_bytes)
-        tmp_path = tmp.name
+def main() -> int:
+    if len(sys.argv) != 2:
+        sys.stderr.write("использование: python voice_worker.py <путь к аудиофайлу>\n")
+        return 2
 
-    try:
-        result = subprocess.run(
-            [sys.executable, _WORKER, tmp_path],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=_TIMEOUT_SECONDS,
-        )
+    audio_path = sys.argv[1]
+    if not os.path.exists(audio_path):
+        sys.stderr.write(f"файл не найден: {audio_path}\n")
+        return 3
 
-        if result.returncode != 0:
-            # stderr рабочего процесса пишем в лог — там будет видна причина
-            logger.error(
-                "Распознавание не удалось (код %s): %s",
-                result.returncode,
-                (result.stderr or "").strip()[:2000],
-            )
-            raise RuntimeError("Не удалось распознать голосовое сообщение")
+    # Импорт внутри функции: библиотека тяжёлая, грузим только когда точно нужна
+    from faster_whisper import WhisperModel
 
-        return (result.stdout or "").strip()
+    model_size = os.getenv("WHISPER_MODEL", "base")
+    # compute_type="int8" — работает на обычном процессоре без видеокарты
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
-    except subprocess.TimeoutExpired:
-        logger.error("Распознавание превысило %s секунд и было прервано", _TIMEOUT_SECONDS)
-        raise RuntimeError("Распознавание заняло слишком много времени")
+    segments, _info = model.transcribe(audio_path, language="ru")
+    text = " ".join(segment.text.strip() for segment in segments).strip()
 
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            logger.warning("Не удалось удалить временный файл %s", tmp_path)
+    # Пишем в stdout напрямую, без print — чтобы ничего лишнего не попало в текст
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

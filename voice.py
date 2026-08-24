@@ -53,13 +53,14 @@ def transcribe_ogg(ogg_bytes: bytes) -> str:
                 result.returncode,
                 (result.stderr or "").strip()[:2000],
             )
-            raise RuntimeError("Не удалось распознать голосовое сообщение")
+            # Пустая строка — сигнал боту ответить по-человечески, а не упасть
+            return ""
 
         return (result.stdout or "").strip()
 
     except subprocess.TimeoutExpired:
         logger.error("Распознавание превысило %s секунд и было прервано", _TIMEOUT_SECONDS)
-        raise RuntimeError("Распознавание заняло слишком много времени")
+        return ""
 
     finally:
         try:
